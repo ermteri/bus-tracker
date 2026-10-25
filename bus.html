@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buss 168 – Sköntorp</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#16181d; --muted:#6a707c; --accent:#0a7d4f; --line:#e2e4e9; --yellow:#b88a00; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111317; --card:#1b1e24; --text:#eceef2; --muted:#98a0ad; --accent:#4cc38a; --line:#2b3039; --yellow:#ffd54a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:460px; margin:0 auto; }
+  h1 { font-size:1.05rem; font-weight:600; margin:0 0 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:12px; }
+  .big { font-size:3rem; font-weight:700; line-height:1.05; height:3.2rem; white-space:nowrap; overflow:hidden; }
+  .big.small { font-size:1.6rem; line-height:3.2rem; }
+  .big.yellow { color:var(--yellow); }
+  .stale { opacity:.45; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .line1 { height:1.5em; line-height:1.5em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:4px; }
+  .muted { color:var(--muted); font-size:.95rem; }
+  .where { color:var(--accent); font-weight:600; }
+  .whererow { display:flex; align-items:center; gap:.35em; }
+  .whererow .stop { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bus { width:1.35em; height:1.35em; flex:none; }
+  .bus .win { fill:var(--card); }
+  .clickable, .clickable .big { cursor:pointer; }
+  .warn { color:#b3261e; }
+  @media (prefers-color-scheme: dark) { .warn { color:#ff8a80; } }
+  .badge { font-size:.75rem; border:1px solid var(--line); border-radius:99px; padding:2px 8px; color:var(--muted); white-space:nowrap; }
+  .badge.live { color:var(--accent); border-color:var(--accent); }
+  ul { list-style:none; margin:0; padding:0; }
+  li { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:9px 0; min-height:3rem; border-top:1px solid var(--line); }
+  li:first-child { border-top:0; }
+  button { font:inherit; padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <div class="card" id="headline"><div class="muted" id="loading"></div></div>
+  <div class="card"><ul id="list"></ul></div>
+  <div class="row">
+    <span class="muted" id="status"></span>
+    <button id="refresh"></button>
+  </div>
+</main>
+
+<script>
+// ---------- settings ----------
+const BUS_URL = 'bus.php';          // path to bus.php; if it lives elsewhere use the full address, e.g. 'https://your-site/folder/bus.php'
+const LANG = 'sv';                  // 'sv' or 'en'
+const REFRESH_MS = 20000;           // refresh while the page is open...
+const AUTO_STOP_MS = 180000;        // ...for 3 minutes, then pause (saves your Trafiklab quota)
+
+const TXT = {
+  sv: { title:'Buss 168 från Sköntorp → Södersjukhuset', loading:'Hämtar…',
+        in:m=>`Om ${m} min`, now:'Nu', live:'Live', tt:'Tidtabell', ontime:'i tid',
+        late:m=>`${m} min sen`, early:m=>`${m} min tidig`, none:'Inga avgångar just nu', updated:'Uppdaterad',
+        paused:'Pausad – tryck Uppdatera', pausedBig:'Pausad', pausedHint:'tryck för att uppdatera', lastUpdate:'uppdaterad', refresh:'Uppdatera', err:'Kunde inte hämta',
+        needkey:'Öppna sidan en gång som bus.html#DIN_HEMLIGA_KOD',
+        at:n=>`Bussen är vid ${n}`, between:(a,b)=>`Bussen är mellan ${a} och ${b}`, near:n=>`Bussen är nära ${n}`,
+        left:n=>n===1?'nästa hållplats är din':`${n} hållplatser kvar` },
+  en: { title:'Bus 168 from Sköntorp → Södersjukhuset', loading:'Loading…',
+        in:m=>`In ${m} min`, now:'Now', live:'Live', tt:'Timetable', ontime:'on time',
+        late:m=>`${m} min late`, early:m=>`${m} min early`, none:'No departures right now', updated:'Updated',
+        paused:'Paused – press Refresh', pausedBig:'Paused', pausedHint:'tap to refresh', lastUpdate:'updated', refresh:'Refresh', err:'Could not fetch',
+        needkey:'Open the page once as bus.html#YOUR_SECRET',
+        at:n=>`The bus is at ${n}`, between:(a,b)=>`The bus is between ${a} and ${b}`, near:n=>`The bus is near ${n}`,
+        left:n=>n===1?'next stop is yours':`${n} stops to go` }
+}[LANG];
+
+// ---------- secret: kept in the URL fragment once, then in localStorage ----------
+let token = location.hash.slice(1);
+try {
+  if (token) { localStorage.setItem('bus_t', token); history.replaceState(null, '', location.pathname + location.search); }
+  else token = localStorage.getItem('bus_t') || '';
+} catch (e) {}
+
+const $ = id => document.getElementById(id);
+$('title').textContent = TXT.title;
+$('loading').textContent = TXT.loading;
+$('refresh').textContent = TXT.refresh;
+
+let buses = [], fetchedAt = 0, startedAt = Date.now(), lastError = '', clockSkewMs = 0, isPaused = false;
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+// Minutes left come from the arrival clock time (the feed's own time) and the browser's clock (Stockholm time),
+// so the big number always agrees with the clock time shown under it, whatever the server's clock says.
+function stockholmSeconds() {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone:'Europe/Stockholm', hourCycle:'h23',
+    hour:'2-digit', minute:'2-digit', second:'2-digit' }).formatToParts(new Date(Date.now() + clockSkewMs)).map(x => [x.type, x.value]));
+  return +p.hour * 3600 + +p.minute * 60 + +p.second;
+}
+function curMin(b) {
+  const m = /^(\d\d):(\d\d):(\d\d)$/.exec(b.arrives || '');
+  if (!m) return b.min - (Date.now() - fetchedAt) / 60000;          // fallback if the time is missing
+  let d = +m[1] * 3600 + +m[2] * 60 + +m[3] - stockholmSeconds();
+  if (d > 43200) d -= 86400; else if (d < -43200) d += 86400;       // around midnight
+  return d / 60;
+}
+const minText = m => m < 1 ? TXT.now : TXT.in(Math.floor(m));
+// With a GPS position, "Nu" means the bus really is at Sköntorp; until then the minimum shown is 1 minute,
+// because the predicted time tends to be a bit optimistic in the last stretch. Without GPS the time decides.
+function countText(b) {
+  const m = curMin(b);
+  if (b.where) {
+    if (b.where.kind === 'at' && b.where.stops_left === 0) return TXT.now;
+    return TXT.in(Math.max(1, Math.floor(m)));
+  }
+  return minText(m);
+}
+function delayText(b) {
+  if (b.src !== 'live' || b.delay_s == null) return '';
+  const d = b.delay_s;
+  if (Math.abs(d) < 60) return TXT.ontime;
+  const m = Math.round(Math.abs(d) / 60);
+  return d > 0 ? TXT.late(m) : TXT.early(m);
+}
+function badge(b) { return el('span', 'badge' + (b.src === 'live' ? ' live' : ''), b.src === 'live' ? TXT.live : TXT.tt); }
+const hhmm = b => b.arrives.slice(0, 5);
+function whereText(b) {
+  const w = b.where;
+  if (!w) return '';
+  return w.kind === 'at' ? TXT.at(w.stop) : w.kind === 'between' ? TXT.between(w.from, w.to) : TXT.near(w.stop);
+}
+// Small bus drawn in SVG (follows the text colour, same look on every device).
+function busIcon() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'bus');
+  svg.setAttribute('aria-hidden', 'true');
+  const add = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.append(e); };
+  add('rect', { x:2, y:3.5, width:20, height:14, rx:3, fill:'currentColor' });
+  add('rect', { class:'win', x:4, y:6, width:5, height:4.5, rx:1 });
+  add('rect', { class:'win', x:10, y:6, width:5, height:4.5, rx:1 });
+  add('rect', { class:'win', x:16, y:6, width:4, height:4.5, rx:1 });
+  add('circle', { cx:7, cy:18, r:2.4, fill:'currentColor', stroke:'var(--card)', 'stroke-width':1.2 });
+  add('circle', { cx:17, cy:18, r:2.4, fill:'currentColor', stroke:'var(--card)', 'stroke-width':1.2 });
+  return svg;
+}
+// "Årsta torg [bus]" = bus at the stop;  "Årsta torg [bus] Årstaskolan" = bus between two stops.
+// Each name shrinks with … on its own, so both stay visible on a narrow screen.
+function whereRow(b) {
+  const w = b.where;
+  const row = el('div', 'line1 where whererow');
+  if (!w) { row.textContent = NBSP; return row; }
+  row.title = whereText(b);                       // the full sentence for hover and screen readers
+  row.setAttribute('aria-label', whereText(b));
+  if (w.kind === 'between') row.append(el('span', 'stop', w.from), busIcon(), el('span', 'stop', w.to));
+  else row.append(el('span', 'stop', w.stop), busIcon());
+  return row;
+}
+function leftText(b) {
+  const w = b.where;
+  return w && w.stops_left > 0 ? TXT.left(w.stops_left) : '';
+}
+const NBSP = '\u00a0';
+const LIST_ROWS = 3;      // the list always has this many rows, so the page keeps the same height
+
+function renderList(upcoming, dim) {
+  const list = $('list');
+  list.parentElement.classList.toggle('stale', dim);
+  list.replaceChildren();
+  for (let i = 0; i < LIST_ROWS; i++) {
+    const li = el('li');
+    const b = upcoming[i];
+    if (b) {
+      const left = el('div');
+      left.append(el('strong', null, `${hhmm(b)}  `), el('span', 'muted', delayText(b)));
+      const right = el('div', 'row');
+      right.append(el('span', null, countText(b)), badge(b));
+      li.append(left, right);
+    } else {
+      li.textContent = NBSP;
+    }
+    list.append(li);
+  }
+}
+
+function render() {
+  const head = $('headline');
+  head.replaceChildren();
+  isPaused = false;
+  head.classList.remove('clickable');
+  const line = (cls, text) => el('div', 'line1 ' + cls, text || NBSP);
+  const message = (text, cls) => {                      // same four rows as a normal bus, so the height never changes
+    const big = el('div', 'big small ' + (cls || ''), text);
+    head.append(big, line('muted'), line('where'), line('muted'));
+    $('list').parentElement.classList.remove('stale');
+    $('list').replaceChildren(...Array.from({ length: LIST_ROWS }, () => el('li', null, NBSP)));
+  };
+  if (!token) { message(TXT.needkey, 'warn'); return; }
+  if (lastError && !buses.length) { message(`${TXT.err}: ${lastError}`, 'warn'); return; }
+  if (!fetchedAt) { message(TXT.loading); return; }
+
+  const paused = Date.now() - startedAt > AUTO_STOP_MS;
+  const updatedAt = new Date(fetchedAt).toLocaleTimeString('sv-SE');
+  $('status').textContent = paused ? `${TXT.paused} (${TXT.lastUpdate} ${updatedAt})` : `${TXT.updated} ${updatedAt}`;
+
+  // The server lists a live bus until the feed drops it or the GPS shows it has passed Sköntorp, so a bus that
+  // is early or late stays in focus until then. The next bus only takes over when the current one is gone.
+  const upcoming = buses.filter(b => curMin(b) > -15);
+
+  if (paused) {
+    // Old data must not look current: the headline is replaced by a yellow "Pausad" and the list is dimmed.
+    const word = el('div', 'big yellow', TXT.pausedBig);
+    word.setAttribute('role', 'button');
+    word.tabIndex = 0;
+    word.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); resume(); } });
+    head.append(word, line('muted', TXT.pausedHint), line('muted', `(${TXT.lastUpdate} ${updatedAt})`), line('where'));
+    isPaused = true;
+    head.classList.add('clickable');                 // a tap anywhere on the headline resumes, like the button
+    renderList(upcoming, true);
+    return;
+  }
+
+  const next = upcoming[0];
+  if (!next) { message(TXT.none); return; }
+
+  const top = el('div', 'row');
+  top.append(el('div', 'big', countText(next)), badge(next));
+  head.append(top);
+  head.append(line('muted', `${hhmm(next)}${delayText(next) ? ' · ' + delayText(next) : ''}`));
+  head.append(whereRow(next));
+  head.append(line('muted', leftText(next)));
+  renderList(upcoming, false);
+}
+
+async function load() {
+  if (!token) { render(); return; }
+  try {
+    const r = await fetch(`${BUS_URL}?t=${encodeURIComponent(token)}&gps=1`, { cache: 'no-store' });
+    const raw = await r.text();
+    let j;
+    try { j = JSON.parse(raw); }
+    catch (e) { throw new Error(`${r.url} gave HTTP ${r.status}, not JSON: ${raw.replace(/\s+/g, ' ').slice(0, 80)}`); }
+    if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+    buses = j.buses || [];
+    fetchedAt = Date.now();
+    // The server's clock is checked against Trafiklab's. If this computer's clock is off by 30 s or more, follow the server.
+    if (typeof j.now_ts === 'number') {
+      const diff = j.now_ts * 1000 - fetchedAt;
+      clockSkewMs = Math.abs(diff) >= 30000 ? diff : 0;
+    }
+    lastError = '';
+  } catch (e) {
+    lastError = e.message;
+  }
+  render();
+}
+
+function resume() { startedAt = Date.now(); load(); }
+$('refresh').addEventListener('click', resume);
+$('headline').addEventListener('click', () => { if (isPaused) resume(); });
+setInterval(() => { if (!document.hidden && Date.now() - startedAt <= AUTO_STOP_MS) load(); }, REFRESH_MS);
+setInterval(render, 1000);   // smooth countdown between fetches
+load();
+</script>
+</body>
+</html>
