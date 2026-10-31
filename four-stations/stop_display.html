@@ -3,20 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bussavgångar – Sköntorp & Skanstull</title>
+<title>Avgångar – Sköntorp och Skanstull</title>
 <style>
   :root { --bg:#0b0d10; --panel:#14181d; --text:#f2f4f7; --muted:#8d96a3; --amber:#ffc83d; --line:#26303a; --blue:#1767c8; --warn:#ff8a80; }
   * { box-sizing: border-box; }
   body { margin:0; padding:14px; background:var(--bg); color:var(--text); font:16px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width:1200px; margin:0 auto; }
-  header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; }
+  main { max-width:900px; margin:0 auto; }
+  header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px; }
   header h1 { margin:0; font-size:1.5rem; }
   #clock { font-size:1.5rem; font-variant-numeric:tabular-nums; color:var(--amber); }
+  h2.stop { margin:18px 0 8px; font-size:1.2rem; }
   .grid { display:grid; grid-template-columns:1fr; gap:12px; }
-  @media (min-width:900px) { .grid { grid-template-columns:1fr 1fr 1fr; } }
+  @media (min-width:760px) { .grid { grid-template-columns:1fr 1fr; } }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
-  .panel h2 { margin:0 0 2px; font-size:1.1rem; font-weight:600; color:var(--text); letter-spacing:.02em; }
-  .panel .subhead { margin:0 0 8px; font-size:.85rem; color:var(--muted); }
+  .panel h3 { margin:0 0 6px; font-size:.95rem; font-weight:600; color:var(--muted); letter-spacing:.02em; }
   .row { display:grid; grid-template-columns:3.2rem 1fr auto auto; gap:10px; align-items:center; padding:9px 0; border-top:1px solid var(--line); }
   .row:first-of-type { border-top:0; }
   .line { background:var(--blue); color:#fff; font-weight:700; text-align:center; border-radius:6px; padding:3px 0; }
@@ -25,45 +25,42 @@
   .clock-time { color:var(--muted); font-variant-numeric:tabular-nums; min-width:3rem; text-align:right; }
   .strike .dest, .strike .when { text-decoration:line-through; opacity:.6; }
   .empty { color:var(--muted); padding:10px 0; }
-  .error { color:var(--warn); margin-bottom:12px; }
-  footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:12px; color:var(--muted); font-size:.85rem; }
+  .empty.err { color:var(--warn); }
+  footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:14px; color:var(--muted); font-size:.85rem; }
   button { font:inherit; padding:7px 13px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--text); cursor:pointer; }
   .note { margin-top:10px; color:var(--muted); font-size:.8rem; }
 </style>
 </head>
 <body>
 <main>
-  <header><h1>Bussavgångar</h1><div id="clock"></div></header>
-  <div id="error" class="error" hidden></div>
-  <div class="grid">
-    <section class="panel"><h2 id="h1"></h2><div id="sub1" class="subhead"></div><div id="d1"></div></section>
-    <section class="panel"><h2 id="h2"></h2><div id="sub2" class="subhead"></div><div id="d2"></div></section>
-    <section class="panel"><h2 id="h3"></h2><div id="sub3" class="subhead"></div><div id="d3"></div></section>
-    <section class="panel"><h2 id="h4"></h2><div id="sub4" class="subhead"></div><div id="d4"></div></section>
-  </div>
+  <header><h1 id="pageTitle"></h1><div id="clock"></div></header>
+  <div id="blocks"></div>
   <footer><span id="status"></span><button id="refresh"></button></footer>
   <div class="note" id="note"></div>
 </main>
 
 <script>
 // ---------------- settings ----------------
-const PANELS = [
-  { id: '1', siteId: 1512, stopName: 'Sköntorp', dir: 2, name: 'Södersjukhuset', line: '168' },
-  { id: '2', siteId: 1512, stopName: 'Sköntorp', dir: 1, name: 'Östbergahöjden', line: '168' },
-  { id: '3', siteId: 9190, stopName: 'Skanstull', dir: 1, name: 'Östbergahöjden', line: '168' },
-  { id: '4', siteId: 9189, stopName: 'Gullmarsplan', dir: 1, name: 'Östbergahöjden', line: '168' },
+// Every stop is described the same way. A stop says WHICH stop ('site' = SL site id, or 'name' = every SL site with
+// that name) and may add filters ('line', 'dest' = the destination contains this text, 'direction' = SL's 1 or 2).
+// Each panel shows one list of departures; it can add or change filters. 'towards' and 'note' are only the heading.
+const STOPS = [
+  { title: 'Sköntorp', site: 1512, panels: [
+      { towards: 'Södersjukhuset', direction: 2 },
+      { towards: 'Östbergahöjden', direction: 1 } ] },
+  { title: 'Skanstull', site: 9190, line: '168', panels: [
+      { towards: 'Östbergahöjden', dest: 'Östbergahöjden', note: 'tidtabell' } ] }
 ];
-
+const PAGE_TITLE = 'Avgångar';
+const PROXY = 'sl_proxy.php';                  // address of sl_proxy.php (all stops are fetched through it)
 const MAX_ROWS = 6;
-const PROXY = 'sl_proxy.php';                 // Set to 'sl_proxy.php' if CORS blocks direct SL API calls
-const REFRESH_MS = 30000;
-const AUTO_STOP_MS = 600000;
+const REFRESH_MS = 30000;                      // refresh every 30 s while the page is visible...
+const AUTO_STOP_MS = 600000;                   // ...for 10 minutes, then pause (button resumes)
 const SHOW_NOTE = true;
 
 const TXT = {
   towards:'mot', now:'Nu', min:m=>`${m} min`, none:'Inga avgångar just nu', updated:'Uppdaterad',
   paused:'Pausad – tryck Uppdatera', refresh:'Uppdatera', err:'Kunde inte hämta',
-  cors:'Webbläsaren blockerade anropet till SL. Ladda upp sl_proxy.php och ange PROXY i sidans inställningar.',
   note:'Tiderna kommer från SL:s API och uppdateras inte alltid live – bussar har kommit före angiven tid (upp till ca 5 min vid mina mätningar).'
 };
 
@@ -71,32 +68,50 @@ const TXT = {
 const $ = id => document.getElementById(id);
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
+// Stockholm wall-clock "now" as a pseudo-UTC number, so SL's local timestamps compare correctly in any time zone
 function stockholmNow() {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone:'Europe/Stockholm', hourCycle:'h23',
     year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' })
     .formatToParts(new Date()).map(x => [x.type, x.value]));
   return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
 }
-const parseLocal = s => Date.parse(String(s).replace(/(Z|[+-]\d\d:?\d\d)$/, '') + 'Z');
+const parseLocal = s => Date.parse(String(s).replace(/(Z|[+-]\d\d:?\d\d)$/, '') + 'Z');   // SL times are Stockholm wall-clock
 const hhmm = ms => new Date(ms).toISOString().slice(11, 16);
 
-let data = {}, fetchedAt = 0, startedAt = Date.now(), lastError = '';
+// ---------------- layout (built once) ----------------
+const panels = [];                             // every panel with its DOM box, its question to the proxy and its latest data
+const QUERY_KEYS = ['site', 'name', 'line', 'dest', 'direction'];
+function queryFor(stop, panel) {               // a panel's own value wins over the stop's
+  const q = new URLSearchParams();
+  for (const k of QUERY_KEYS) { const v = panel[k] ?? stop[k]; if (v !== undefined && v !== '') q.set(k, v); }
+  return `${PROXY}?${q}`;
+}
+for (const stop of STOPS) {
+  $('blocks').append(el('h2', 'stop', stop.title));
+  const grid = el('div', 'grid');
+  for (const p of stop.panels) {
+    const section = el('section', 'panel');
+    const box = el('div');
+    section.append(el('h3', null, `${TXT.towards} ${p.towards}${p.note ? ' · ' + p.note : ''}`), box);
+    grid.append(section);
+    panels.push({ cfg: p, url: queryFor(stop, p), box, deps: [], error: '' });
+  }
+  $('blocks').append(grid);
+}
+
+let fetchedAt = 0, startedAt = Date.now();
 
 // ---------------- fetching ----------------
-async function getPanelDepartures(panel) {
-  const dirParam = panel.dir ? `&direction=${panel.dir}` : '';
-  const url = PROXY ? `${PROXY}?site_id=${panel.siteId}${dirParam}`
-                    : `https://transport.integration.sl.se/v1/sites/${panel.siteId}/departures${panel.dir ? `?direction=${panel.dir}` : ''}`;
+async function getPanel(pn) {
   let r;
-  try { r = await fetch(url, { cache:'no-store' }); }
-  catch (e) { throw new Error(PROXY ? e.message : TXT.cors); }
+  try { r = await fetch(pn.url, { cache:'no-store' }); }
+  catch (e) { throw new Error(e.message); }
   const raw = await r.text();
   let j;
-  try { j = JSON.parse(raw); } catch (e) { throw new Error(`${url} gave HTTP ${r.status}, not JSON`); }
+  try { j = JSON.parse(raw); } catch (e) { throw new Error(`${pn.url} gave HTTP ${r.status}, not JSON`); }
   if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
-
   return (j.departures || []).map(d => ({
-    line: String(d.line?.designation ?? d.line?.group_of_lines ?? ''),
+    line: String(d.line?.designation ?? ''),
     dest: d.destination || '',
     time: parseLocal(d.expected || d.scheduled || ''),
     cancelled: /cancel|inst/i.test(String(d.state || '')) || /inst/i.test(String(d.display || '')),
@@ -105,12 +120,12 @@ async function getPanelDepartures(panel) {
 }
 
 async function load() {
-  try {
-    const results = await Promise.all(PANELS.map(p => getPanelDepartures(p)));
-    data = Object.fromEntries(PANELS.map((p, i) => [p.id, results[i]]));
-    fetchedAt = Date.now();
-    lastError = '';
-  } catch (e) { lastError = e.message; }
+  // every panel on its own, so a problem with one stop does not blank the others
+  await Promise.all(panels.map(async pn => {
+    try { pn.deps = await getPanel(pn); pn.error = ''; }
+    catch (e) { pn.error = e.message; }
+  }));
+  fetchedAt = Date.now();
   render();
 }
 
@@ -121,36 +136,27 @@ function render() {
   const now = stockholmNow();
   $('clock').textContent = new Date(now).toISOString().slice(11, 19);
 
-  const err = $('error');
-  err.hidden = !lastError;
-  err.textContent = lastError ? `${TXT.err}: ${lastError}` : '';
-
-  for (const p of PANELS) {
-    $('h' + p.id).textContent = p.stopName;
-    $('sub' + p.id).textContent = `${TXT.towards} ${p.name}`;
-    const box = $('d' + p.id);
-    box.replaceChildren();
-    
-    const rows = (data[p.id] || [])
-      .filter(d => !p.line || d.line === p.line)
+  for (const pn of panels) {
+    pn.box.replaceChildren();
+    if (pn.error) { pn.box.append(el('div', 'empty err', `${TXT.err}: ${pn.error}`)); continue; }
+    const rows = pn.deps
       .filter(d => d.time - now > -60000)
       .sort((x, y) => x.time - y.time)
       .slice(0, MAX_ROWS);
-
-    if (!rows.length) { box.append(el('div', 'empty', fetchedAt ? TXT.none : '…')); continue; }
-    
+    if (!rows.length) { pn.box.append(el('div', 'empty', fetchedAt ? TXT.none : '…')); continue; }
     for (const d of rows) {
       const mins = (d.time - now) / 60000;
       const row = el('div', 'row' + (d.cancelled ? ' strike' : ''));
-      row.append(el('span', 'line', d.line), el('span', 'dest', p.name || d.dest),
+      row.append(el('span', 'line', d.line), el('span', 'dest', d.dest || pn.cfg.towards),
                  el('span', 'when', whenText(mins) ?? hhmm(d.time)), el('span', 'clock-time', hhmm(d.time)));
-      box.append(row);
+      pn.box.append(row);
     }
   }
   const paused = Date.now() - startedAt > AUTO_STOP_MS;
   $('status').textContent = paused ? TXT.paused : (fetchedAt ? `${TXT.updated} ${new Date(fetchedAt).toLocaleTimeString('sv-SE')}` : '');
 }
 
+$('pageTitle').textContent = PAGE_TITLE;
 $('refresh').textContent = TXT.refresh;
 if (SHOW_NOTE) $('note').textContent = TXT.note;
 $('refresh').addEventListener('click', () => { startedAt = Date.now(); load(); });
